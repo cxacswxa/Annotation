@@ -3,7 +3,7 @@ import pandas as pd
 import re
 import base64
 import mammoth
-import io  # 新增：用于解析字符串形式的 CSV 数据
+import io  # 用于解析字符串形式的 CSV 数据
 
 # streamlit run annotation_tool.py
 
@@ -137,7 +137,7 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # === 新增模块：AI Prompt 纯文本快捷导入 ===
+    # === 模块：AI Prompt 纯文本快捷导入 ===
     st.header("🤖 3. AI 快捷导入")
     st.markdown("将大模型生成的 CSV 格式结果直接粘贴至此：")
     prompt_text = st.text_area(
@@ -149,19 +149,15 @@ with st.sidebar:
     if st.button("📥 解析并追加 AI 数据"):
         if prompt_text.strip():
             try:
-                # 1. 将字符串当作 CSV 读取
                 df_prompt = pd.read_csv(io.StringIO(prompt_text.strip()))
 
-                # 2. 检查是否有缺失列并补全 (核心：不改变输出结构)
                 if '教学结构' not in df_prompt.columns:
-                    # 尝试插在 '活动类型' 后面
                     if '活动类型' in df_prompt.columns:
                         col_idx = df_prompt.columns.get_loc('活动类型') + 1
                         df_prompt.insert(col_idx, '教学结构', '')
                     else:
                         df_prompt['教学结构'] = ''
 
-                # 3. 强制统一列名顺序，防止 AI 生成错乱
                 expected_cols = ['编号', '开始时间', '结束时间', '活动类型', '教学结构', '核心任务或目标', '证据说明',
                                  '备注']
                 for col in expected_cols:
@@ -169,10 +165,8 @@ with st.sidebar:
                         df_prompt[col] = ''
                 df_prompt = df_prompt[expected_cols]
 
-                # 4. 消除所有NaN（填入空字符串）
                 df_prompt = df_prompt.fillna("")
 
-                # 5. 追加到主数据表中
                 st.session_state.data = pd.concat([st.session_state.data, df_prompt], ignore_index=True)
                 st.success("✅ AI 数据解析并追加成功！")
                 st.rerun()
@@ -241,10 +235,21 @@ with col_materials:
         display_file_preview(task_file)
 
     st.markdown("---")
-    st.markdown("### 📊 已标注数据预览")
-    st.dataframe(st.session_state.data, use_container_width=True, height=300)
 
-    if st.button("🛑 撤销上一次提交"):
+    # === 修改核心：可交互的数据预览区 ===
+    st.markdown("### 📊 已标注数据预览 (双击单元格即可编辑内容)")
+
+    # 使用 st.data_editor 替代 st.dataframe
+    st.session_state.data = st.data_editor(
+        st.session_state.data,
+        use_container_width=True,
+        height=300,
+        num_rows="dynamic",  # 允许动态增删行
+        key="data_editor_widget"
+    )
+    # ==========================================
+
+    if st.button("🛑 撤销通过表单提交的上一次操作"):
         if not st.session_state.data.empty:
             last_id_str = st.session_state.data.iloc[-1]['编号']
             last_nums = re.findall(r'\d+', str(last_id_str))
@@ -260,7 +265,7 @@ with col_form:
     with st.form("annotation_form", clear_on_submit=False):
 
         current_act_idx = get_next_activity_index(st.session_state.data)
-        st.markdown(f"**🔥 当前活动序号：{current_act_idx}**")
+        st.markdown(f"**🔥 下一步将分配的活动序号：{current_act_idx}**")
 
         c1, c2 = st.columns(2)
         with c1:
