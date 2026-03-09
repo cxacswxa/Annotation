@@ -3,12 +3,15 @@ import pandas as pd
 import re
 import base64
 import mammoth
+import io  # 新增：用于解析字符串形式的 CSV 数据
 
 # streamlit run annotation_tool.py
 
 
 st.set_page_config(page_title="教学活动标注工具V8", layout="wide")
 st.title("📹 教学活动标注工具 (V8: 含教学结构版)")
+
+
 def read_docx_content(file):
     """使用 mammoth 将 docx 转换为 html，并强制应用高对比度 + 内部滚动样式"""
     try:
@@ -93,11 +96,14 @@ def get_next_activity_index(df):
         return 1
 
 
-# --- 初始化 (增加 '教学结构' 列) ---
+# --- 初始化 ---
 if 'data' not in st.session_state:
     st.session_state.data = pd.DataFrame(columns=[
         '编号', '开始时间', '结束时间', '活动类型', '教学结构', '核心任务或目标', '证据说明', '备注'
     ])
+
+if 'ask_clear_data' not in st.session_state:
+    st.session_state.ask_clear_data = False
 
 # =======================
 # 1. 侧边栏
@@ -110,18 +116,16 @@ with st.sidebar:
     task_file = st.file_uploader("3️⃣ 上传学习任务单 (AT)", type=['pdf', 'docx', 'png', 'jpg'])
 
     st.header("💾 2. 数据管理")
-    uploaded_csv = st.file_uploader("导入已有标注表", type=['csv', 'xlsx'])
+    uploaded_csv = st.file_uploader("导入已有标注表 (CSV/Excel文件)", type=['csv', 'xlsx'])
     if uploaded_csv:
-        if st.button("加载数据"):
+        if st.button("加载文件数据"):
             try:
                 if uploaded_csv.name.endswith('.csv'):
                     df_load = pd.read_csv(uploaded_csv)
                 else:
                     df_load = pd.read_excel(uploaded_csv)
 
-                # 兼容性处理：如果旧表没有'教学结构'列，补上
                 if '教学结构' not in df_load.columns:
-                    # 插入到'活动类型'后面
                     col_idx = df_load.columns.get_loc('活动类型') + 1 if '活动类型' in df_load.columns else 3
                     df_load.insert(col_idx, '教学结构', '')
 
@@ -132,13 +136,85 @@ with st.sidebar:
                 st.error(f"加载失败: {e}")
 
     st.markdown("---")
-    csv_buffer = st.session_state.data.to_csv(index=False).encode('utf-8-sig')
-    st.download_button(
-        label="📥 下载最终标注表 (CSV)",
-        data=csv_buffer,
-        file_name="教学活动标注结果_V8.csv",
-        mime="text/csv"
+
+    # === 新增模块：AI Prompt 纯文本快捷导入 ===
+    st.header("🤖 3. AI 快捷导入")
+    st.markdown("将大模型生成的 CSV 格式结果直接粘贴至此：")
+    prompt_text = st.text_area(
+        "粘贴 AI 输出内容",
+        placeholder="编号,开始时间,结束时间,活动类型,核心任务或目标,证据说明,备注\nAV1,00:00:13,00:01:15,导入,引入...",
+        height=150
     )
+
+    if st.button("📥 解析并追加 AI 数据"):
+        if prompt_text.strip():
+            try:
+                # 1. 将字符串当作 CSV 读取
+                df_prompt = pd.read_csv(io.StringIO(prompt_text.strip()))
+
+                # 2. 检查是否有缺失列并补全 (核心：不改变输出结构)
+                if '教学结构' not in df_prompt.columns:
+                    # 尝试插在 '活动类型' 后面
+                    if '活动类型' in df_prompt.columns:
+                        col_idx = df_prompt.columns.get_loc('活动类型') + 1
+                        df_prompt.insert(col_idx, '教学结构', '')
+                    else:
+                        df_prompt['教学结构'] = ''
+
+                # 3. 强制统一列名顺序，防止 AI 生成错乱
+                expected_cols = ['编号', '开始时间', '结束时间', '活动类型', '教学结构', '核心任务或目标', '证据说明',
+                                 '备注']
+                for col in expected_cols:
+                    if col not in df_prompt.columns:
+                        df_prompt[col] = ''
+                df_prompt = df_prompt[expected_cols]
+
+                # 4. 消除所有NaN（填入空字符串）
+                df_prompt = df_prompt.fillna("")
+
+                # 5. 追加到主数据表中
+                st.session_state.data = pd.concat([st.session_state.data, df_prompt], ignore_index=True)
+                st.success("✅ AI 数据解析并追加成功！")
+                st.rerun()
+            except Exception as e:
+                st.error(f"解析失败，请检查 AI 输出是否符合带有表头的 CSV 格式。错误信息: {e}")
+        else:
+            st.warning("⚠️ 请先在上方粘贴内容")
+
+    st.markdown("---")
+    # ==========================================
+
+    csv_buffer = st.session_state.data.to_csv(index=False).encode('utf-8-sig')
+
+    if video_file is not None:
+        video_name = video_file.name.rsplit('.', 1)[0]
+        export_file_name = f"{video_name}_教学活动标注.csv"
+    else:
+        export_file_name = "教学活动标注.csv"
+
+    if st.download_button(
+            label="📥 下载最终标注表 (CSV)",
+            data=csv_buffer,
+            file_name=export_file_name,
+            mime="text/csv"
+    ):
+        st.session_state.ask_clear_data = True
+        st.rerun()
+
+    if st.session_state.ask_clear_data:
+        st.warning("⚠️ 文件已触发下载！是否要清空当前列表，开始新的标注？")
+        col_btn1, col_btn2 = st.columns(2)
+        with col_btn1:
+            if st.button("✅ 是，清空数据"):
+                st.session_state.data = pd.DataFrame(columns=[
+                    '编号', '开始时间', '结束时间', '活动类型', '教学结构', '核心任务或目标', '证据说明', '备注'
+                ])
+                st.session_state.ask_clear_data = False
+                st.rerun()
+        with col_btn2:
+            if st.button("❌ 否，保留数据"):
+                st.session_state.ask_clear_data = False
+                st.rerun()
 
 # =======================
 # 2. 主界面
@@ -194,7 +270,6 @@ with col_form:
 
         st.markdown("---")
 
-        # --- 活动类型 ---
         st.markdown("**1. 活动类型**")
         activity_type = st.radio(
             "选择阶段",
@@ -206,9 +281,7 @@ with col_form:
 
         st.markdown("---")
 
-        # --- 新增：教学结构 ---
         st.markdown("**2. 教学结构 (四选一)**")
-        # 使用 columns 稍微优化布局，或者直接用 radio
         structure_type = st.radio(
             "选择师生主导权结构",
             options=["H", "L", "L+H", "H+L"],
@@ -219,7 +292,7 @@ with col_form:
                 "H+L: 教师指导为主，学生活动为辅"
             ],
             index=0,
-            horizontal=True,  # 横向排列更省空间
+            horizontal=True,
             key="struct_type"
         )
 
@@ -231,28 +304,24 @@ with col_form:
 
         st.markdown("**4. 证据来源 & 具体内容**")
 
-        # AV
         c_av_check, c_av_text = st.columns([0.2, 0.8])
         with c_av_check:
             check_av = st.checkbox("AV", value=True, help="视频")
         with c_av_text:
             text_av = st.text_input("视频依据", placeholder="如：屏幕出现'练习'", label_visibility="collapsed")
 
-        # AR
         c_ar_check, c_ar_text = st.columns([0.2, 0.8])
         with c_ar_check:
             check_ar = st.checkbox("AR", value=True, help="实录")
         with c_ar_text:
             text_ar = st.text_input("实录依据", placeholder="如：老师说'开始'", label_visibility="collapsed")
 
-        # AP
         c_ap_check, c_ap_text = st.columns([0.2, 0.8])
         with c_ap_check:
             check_ap = st.checkbox("AP", help="教案")
         with c_ap_text:
             text_ap = st.text_input("教案依据", placeholder="如：环节一", label_visibility="collapsed")
 
-        # AT
         c_at_check, c_at_text = st.columns([0.2, 0.8])
         with c_at_check:
             check_at = st.checkbox("AT", help="任务单")
@@ -285,7 +354,7 @@ with col_form:
                         '开始时间': start_time,
                         '结束时间': end_time,
                         '活动类型': activity_type,
-                        '教学结构': structure_type,  # 写入新增字段
+                        '教学结构': structure_type,
                         '核心任务或目标': task_desc,
                         '证据说明': final_evidence,
                         '备注': notes
@@ -297,6 +366,3 @@ with col_form:
             else:
                 st.session_state.data = pd.concat([st.session_state.data, pd.DataFrame(new_rows)], ignore_index=True)
                 st.rerun()
-# 将以下代码添加到 annotation_tool.py 的最末尾
-
-
