@@ -3,7 +3,7 @@ import pandas as pd
 import re
 import base64
 import mammoth
-import io  # 新增：用于解析字符串形式的 CSV 数据
+import io
 
 # streamlit run annotation_tool.py
 
@@ -96,11 +96,15 @@ def get_next_activity_index(df):
         return 1
 
 
-# --- 初始化 ---
+# --- 初始化双状态管理 ---
+# data 作为稳定底座，edited_data 接收前端修改并供导出
 if 'data' not in st.session_state:
     st.session_state.data = pd.DataFrame(columns=[
         '编号', '开始时间', '结束时间', '活动类型', '教学结构', '核心任务或目标', '证据说明', '备注'
     ])
+
+if 'edited_data' not in st.session_state:
+    st.session_state.edited_data = st.session_state.data
 
 if 'ask_clear_data' not in st.session_state:
     st.session_state.ask_clear_data = False
@@ -130,6 +134,9 @@ with st.sidebar:
                     df_load.insert(col_idx, '教学结构', '')
 
                 st.session_state.data = df_load
+                st.session_state.edited_data = df_load
+                if "data_editor_widget" in st.session_state:
+                    del st.session_state["data_editor_widget"]
                 st.success("加载成功！")
                 st.rerun()
             except Exception as e:
@@ -137,7 +144,6 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # === 新增模块：AI Prompt 纯文本快捷导入 ===
     st.header("🤖 3. AI 快捷导入")
     st.markdown("将大模型生成的 CSV 格式结果直接粘贴至此：")
     prompt_text = st.text_area(
@@ -149,31 +155,29 @@ with st.sidebar:
     if st.button("📥 解析并追加 AI 数据"):
         if prompt_text.strip():
             try:
-                # 1. 将字符串当作 CSV 读取
                 df_prompt = pd.read_csv(io.StringIO(prompt_text.strip()))
 
-                # 2. 检查是否有缺失列并补全 (核心：不改变输出结构)
                 if '教学结构' not in df_prompt.columns:
-                    # 尝试插在 '活动类型' 后面
                     if '活动类型' in df_prompt.columns:
                         col_idx = df_prompt.columns.get_loc('活动类型') + 1
                         df_prompt.insert(col_idx, '教学结构', '')
                     else:
                         df_prompt['教学结构'] = ''
 
-                # 3. 强制统一列名顺序，防止 AI 生成错乱
                 expected_cols = ['编号', '开始时间', '结束时间', '活动类型', '教学结构', '核心任务或目标', '证据说明',
                                  '备注']
                 for col in expected_cols:
                     if col not in df_prompt.columns:
                         df_prompt[col] = ''
                 df_prompt = df_prompt[expected_cols]
-
-                # 4. 消除所有NaN（填入空字符串）
                 df_prompt = df_prompt.fillna("")
 
-                # 5. 追加到主数据表中
-                st.session_state.data = pd.concat([st.session_state.data, df_prompt], ignore_index=True)
+                updated_data = pd.concat([st.session_state.edited_data, df_prompt], ignore_index=True)
+                st.session_state.data = updated_data
+                st.session_state.edited_data = updated_data
+                if "data_editor_widget" in st.session_state:
+                    del st.session_state["data_editor_widget"]
+
                 st.success("✅ AI 数据解析并追加成功！")
                 st.rerun()
             except Exception as e:
@@ -182,9 +186,9 @@ with st.sidebar:
             st.warning("⚠️ 请先在上方粘贴内容")
 
     st.markdown("---")
-    # ==========================================
 
-    csv_buffer = st.session_state.data.to_csv(index=False).encode('utf-8-sig')
+    # 注意：导出时使用的是 edited_data (包含你实时双击修改的最新内容)
+    csv_buffer = st.session_state.edited_data.to_csv(index=False).encode('utf-8-sig')
 
     if video_file is not None:
         video_name = video_file.name.rsplit('.', 1)[0]
@@ -206,9 +210,13 @@ with st.sidebar:
         col_btn1, col_btn2 = st.columns(2)
         with col_btn1:
             if st.button("✅ 是，清空数据"):
-                st.session_state.data = pd.DataFrame(columns=[
+                empty_df = pd.DataFrame(columns=[
                     '编号', '开始时间', '结束时间', '活动类型', '教学结构', '核心任务或目标', '证据说明', '备注'
                 ])
+                st.session_state.data = empty_df
+                st.session_state.edited_data = empty_df
+                if "data_editor_widget" in st.session_state:
+                    del st.session_state["data_editor_widget"]
                 st.session_state.ask_clear_data = False
                 st.rerun()
         with col_btn2:
@@ -241,17 +249,31 @@ with col_materials:
         display_file_preview(task_file)
 
     st.markdown("---")
-    st.markdown("### 📊 已标注数据预览")
-    st.dataframe(st.session_state.data, use_container_width=True, height=300)
+    st.markdown("### 📊 已标注数据预览 (双击单元格即可编辑内容)")
 
-    if st.button("🛑 撤销上一次提交"):
-        if not st.session_state.data.empty:
-            last_id_str = st.session_state.data.iloc[-1]['编号']
+    # 核心修复点：将基础 data 传入编辑器，但把编辑结果赋值给 separate 的 edited_data
+    st.session_state.edited_data = st.data_editor(
+        st.session_state.data,
+        use_container_width=True,
+        height=300,
+        num_rows="dynamic",
+        key="data_editor_widget"
+    )
+
+    if st.button("🛑 撤销通过表单提交的上一次操作"):
+        if not st.session_state.edited_data.empty:
+            last_id_str = st.session_state.edited_data.iloc[-1]['编号']
             last_nums = re.findall(r'\d+', str(last_id_str))
             if last_nums:
                 target_idx = last_nums[0]
-                mask = st.session_state.data['编号'].apply(lambda x: target_idx not in re.findall(r'\d+', str(x)))
-                st.session_state.data = st.session_state.data[mask]
+                mask = st.session_state.edited_data['编号'].apply(
+                    lambda x: target_idx not in re.findall(r'\d+', str(x)))
+
+                updated_data = st.session_state.edited_data[mask]
+                st.session_state.data = updated_data
+                st.session_state.edited_data = updated_data
+                if "data_editor_widget" in st.session_state:
+                    del st.session_state["data_editor_widget"]
                 st.rerun()
 
 with col_form:
@@ -259,8 +281,9 @@ with col_form:
 
     with st.form("annotation_form", clear_on_submit=False):
 
-        current_act_idx = get_next_activity_index(st.session_state.data)
-        st.markdown(f"**🔥 当前活动序号：{current_act_idx}**")
+        # 序号基于当前的 edited_data 获取，以防用户在表格中直接删除了最新行
+        current_act_idx = get_next_activity_index(st.session_state.edited_data)
+        st.markdown(f"**🔥 下一步将分配的活动序号：{current_act_idx}**")
 
         c1, c2 = st.columns(2)
         with c1:
@@ -287,7 +310,7 @@ with col_form:
             options=["H", "L", "L+H", "H+L"],
             captions=[
                 "H: 教师指导为主 (高结构)",
-                "L: 学生活动为主 (低结构)",
+                "L: 学走到为主 (低结构)",
                 "L+H: 学生活动为主，教师指导为辅",
                 "H+L: 教师指导为主，学生活动为辅"
             ],
@@ -364,5 +387,13 @@ with col_form:
             if not has_selection:
                 st.error("请至少勾选一个证据来源！")
             else:
-                st.session_state.data = pd.concat([st.session_state.data, pd.DataFrame(new_rows)], ignore_index=True)
+                # 提交新行时，附加到最新的 edited_data 后面，并更新底层 data
+                updated_data = pd.concat([st.session_state.edited_data, pd.DataFrame(new_rows)], ignore_index=True)
+                st.session_state.data = updated_data
+                st.session_state.edited_data = updated_data
+
+                # 清除编辑器的暂存缓存，让它使用全新的底层 data 刷新
+                if "data_editor_widget" in st.session_state:
+                    del st.session_state["data_editor_widget"]
+
                 st.rerun()
