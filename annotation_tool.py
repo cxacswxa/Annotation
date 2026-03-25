@@ -5,7 +5,7 @@ import base64
 import mammoth
 import io
 
-# streamlit run annotation_tool.py
+# 启动需要控制台输入：streamlit run annotation_tool.py
 
 
 st.set_page_config(page_title="教学活动标注工具V8", layout="wide")
